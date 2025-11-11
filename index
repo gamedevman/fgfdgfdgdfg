@@ -1,7 +1,800 @@
- <!DOCTYPE html>
-<html>
-<head></head>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Web LAN Racer</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Three.js for 3D graphics -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        /* Custom styles for the game area */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117; /* Dark background */
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* Container for the game area (canvas + overlay) */
+        #game-container {
+            position: relative;
+            max-width: 700px;
+            width: 95%;
+            aspect-ratio: 1 / 1; /* Keep canvas square */
+            margin: 20px auto;
+            border: 4px solid #1f6feb;
+            border-radius: 12px;
+            box-shadow: 0 0 20px rgba(31, 111, 235, 0.5);
+            overflow: hidden;
+        }
+
+        /* The canvas now hosts the 3D scene */
+        #game-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: transparent;
+        }
+
+        #message-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            padding: 24px 32px;
+            border-radius: 12px;
+            border: 2px solid #1f6feb;
+            text-align: center;
+            z-index: 10;
+            max-width: 80%;
+            box-shadow: 0 0 15px rgba(31, 111, 235, 0.7);
+        }
+
+        .btn-primary {
+            @apply bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-all duration-200 shadow-lg shadow-indigo-500/50;
+        }
+
+        .input-text {
+            @apply bg-gray-700 border border-gray-600 text-white p-2 rounded-lg focus:ring-indigo-500 focus:border-indigo-500;
+        }
+    </style>
+</head>
 <body>
-<p>hi test</p>
+
+    <header class="w-full text-center py-4">
+        <h1 class="text-3xl font-extrabold text-indigo-400">🏎️ 3D Web LAN Racer</h1>
+        <p class="text-gray-400 mt-1">Race your friends in a 3D world using a shared room ID.</p>
+    </header>
+
+    <!-- Connection/Lobby UI -->
+    <div id="lobby-ui" class="p-6 bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mb-4">
+        <h2 class="text-2xl font-semibold mb-4 text-center text-indigo-300">Start a Race</h2>
+
+        <div class="mb-4">
+            <label for="player-name" class="block text-sm font-medium text-gray-300 mb-1">Your Name</label>
+            <input type="text" id="player-name" value="Driver-1" placeholder="Enter your name" class="input-text w-full">
+        </div>
+
+        <div class="mb-4">
+            <label for="room-id" class="block text-sm font-medium text-gray-300 mb-1">Room ID (e.g., 'fastlane')</label>
+            <input type="text" id="room-id" placeholder="Enter or create a room ID" class="input-text w-full uppercase">
+        </div>
+
+        <div class="mb-6">
+            <label for="room-password" class="block text-sm font-medium text-gray-300 mb-1">Password (Optional)</label>
+            <input type="password" id="room-password" placeholder="Enter password to join/create protected room" class="input-text w-full">
+        </div>
+
+        <div class="flex space-x-4">
+            <button id="host-btn" class="btn-primary flex-1">Create New Room</button>
+            <button id="join-btn" class="btn-primary flex-1">Join Room</button>
+        </div>
+    </div>
+
+    <!-- Game Area and Status -->
+    <div id="game-ui" class="hidden w-full max-w-lg">
+        <div class="flex justify-between items-center bg-gray-700 p-3 rounded-t-lg">
+            <p class="text-sm">Room: <span id="current-room-id" class="font-mono text-indigo-400"></span></p>
+            <p class="text-sm">Status: <span id="game-status" class="font-bold text-yellow-400">WAITING</span></p>
+        </div>
+
+        <div id="game-container">
+            <canvas id="game-canvas"></canvas>
+            <div id="message-box" class="hidden">
+                <h3 id="message-title" class="text-2xl font-bold mb-2"></h3>
+                <p id="message-text" class="mb-4 text-gray-300"></p>
+                <button id="message-close-btn" class="btn-primary">OK</button>
+            </div>
+        </div>
+
+        <div class="p-4 bg-gray-800 rounded-b-lg shadow-inner">
+            <h3 class="text-xl font-semibold mb-2 text-indigo-300">Players (<span id="player-count">0</span>)</h3>
+            <ul id="player-list" class="space-y-1 text-sm">
+                <!-- Player list will be inserted here -->
+            </ul>
+            <p class="mt-4 text-xs text-gray-500">Use **Arrow Keys** or **WASD** to drive. Press **SPACE** to start the race.</p>
+        </div>
+    </div>
+
+    <!-- Firebase SDKs and Game Logic -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, updateDoc, onSnapshot, collection, runTransaction, serverTimestamp, setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // --- GLOBAL GAME STATE AND FIREBASE SETUP ---
+        const GAME_CONFIG = {
+            CANVAS_SIZE: 700, // Size used for HTML container and viewport
+            
+            // Car dimensions (detailed)
+            CAR_WIDTH: 10,  
+            CAR_HEIGHT: 5,  
+            CAR_DEPTH: 18,  
+
+            MAX_SPEED: 4,
+            ACCELERATION: 0.1,
+            TURN_RATE: 0.05,
+            FRICTION: 0.95,
+            MAX_STEER: 0.2,
+            UPDATE_INTERVAL_MS: 100, // Throttle Firestore updates
+            
+            // Track dimensions (detailed)
+            TRACK_OUTER_RADIUS: 300,
+            TRACK_INNER_RADIUS: 180,
+            TRACK_ROAD_COLOR: 0x495057,
+            TRACK_GRASS_COLOR: 0x2e4033, // Darker, less vivid green
+            CURB_WIDTH: 5, // Width/height of the curb
+            CURB_COLOR_INNER: 0xcc0000, // Red
+            CURB_COLOR_OUTER: 0xffffff, // White
+        };
+
+        // Road center radius (used for initial car placement)
+        const ROAD_CENTER_RADIUS = (GAME_CONFIG.TRACK_OUTER_RADIUS + GAME_CONFIG.TRACK_INNER_RADIUS) / 2;
+
+        let db, auth, userId = null;
+        let roomDocRef = null;
+        let gameData = { players: {} };
+        let localPlayerState = null;
+        let lastFirestoreUpdate = 0;
+        let keys = {};
+        const colorPalette = [0xf94144, 0xf3722c, 0xf8961e, 0x90be6d, 0x43aa8b, 0x577590, 0x6d597a, 0xa9855f];
+
+        // THREE.js global variables
+        let scene, camera, renderer;
+        let carMeshes = {}; // Map of userId to THREE.Group (the car model)
+        let trackMesh;
+
+        // DOM elements
+        const canvas = document.getElementById('game-canvas');
+        const lobbyUi = document.getElementById('lobby-ui');
+        const gameUi = document.getElementById('game-ui');
+        const playerNameInput = document.getElementById('player-name');
+        const roomIdInput = document.getElementById('room-id');
+        const roomPasswordInput = document.getElementById('room-password');
+        const hostBtn = document.getElementById('host-btn');
+        const joinBtn = document.getElementById('join-btn');
+        const playerList = document.getElementById('player-list');
+        const gameStatusEl = document.getElementById('game-status');
+        const currentRoomIdEl = document.getElementById('current-room-id');
+
+        // Message Box elements
+        const messageBox = document.getElementById('message-box');
+        const messageTitle = document.getElementById('message-title');
+        const messageText = document.getElementById('message-text');
+        const messageCloseBtn = document.getElementById('message-close-btn');
+
+        // --- UTILITY FUNCTIONS ---
+
+        /** Shows a custom modal message. */
+        function showMessage(title, text) {
+            messageTitle.textContent = title;
+            messageText.textContent = text;
+            messageBox.classList.remove('hidden');
+        }
+
+        /** Hides the custom modal message. */
+        messageCloseBtn.addEventListener('click', () => {
+            messageBox.classList.add('hidden');
+        });
+
+        /** Calculates the distance between two points. (Used for 2D radial collision)*/
+        function distance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        /** Checks if a position is within the track boundaries (2D check). */
+        function checkCollision(x, y) {
+            // Check radial distance from the center (350, 350)
+            const centerX = GAME_CONFIG.CANVAS_SIZE / 2;
+            const centerY = GAME_CONFIG.CANVAS_SIZE / 2;
+
+            const dist = distance({ x, y }, { x: centerX, y: centerY });
+            // Check if outside the inner radius OR outside the outer radius
+            return dist < GAME_CONFIG.TRACK_INNER_RADIUS || dist > GAME_CONFIG.TRACK_OUTER_RADIUS;
+        }
+
+        /** Simple SHA-256 Hashing for password protection. */
+        async function sha256(message) {
+            const msgBuffer = new TextEncoder().encode(message);
+            // Use browser's built-in crypto module
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // --- FIREBASE INITIALIZATION AND AUTHENTICATION ---
+
+        async function initializeFirebase() {
+            try {
+                setLogLevel('error');
+
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Sign in using the initial token or anonymously
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        // Authentication ready, enable buttons
+                        hostBtn.disabled = false;
+                        joinBtn.disabled = false;
+                        hostBtn.textContent = 'Create New Room';
+                        joinBtn.textContent = 'Join Room';
+                    } else {
+                        showMessage("Authentication Error", "Could not authenticate with Firebase.");
+                    }
+                });
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                showMessage("Setup Error", "Failed to connect to the database. Check console for details.");
+            }
+        }
+
+        // --- ROOM MANAGEMENT ---
+
+        /** Constructs the Firestore collection reference. */
+        function getRoomCollectionRef() {
+            return collection(db, 'artifacts', appId, 'public', 'data', 'racing_rooms');
+        }
+
+        /** Sets up the real-time listener for the chosen room. */
+        function setupRoomListener(roomId) {
+            currentRoomIdEl.textContent = roomId;
+            roomDocRef = doc(getRoomCollectionRef(), roomId);
+
+            // Real-time snapshot listener
+            onSnapshot(roomDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    gameData = docSnap.data();
+
+                    if (!gameData.players) {
+                        gameData.players = {};
+                    }
+
+                    // Update UI elements
+                    document.getElementById('player-count').textContent = Object.keys(gameData.players).length;
+                    gameStatusEl.textContent = gameData.status.toUpperCase();
+                    gameStatusEl.className = `font-bold ${gameData.status === 'racing' ? 'text-green-400' : 'text-yellow-400'}`;
+
+                    // Update local player state from the database
+                    if (gameData.players[userId]) {
+                        // Blend the local state with the network state
+                        localPlayerState = { ...localPlayerState, ...gameData.players[userId] };
+                    }
+
+                    renderPlayerList();
+                } else {
+                    // Room disappeared
+                    showMessage("Room Disconnected", "The race room no longer exists. Returning to lobby.");
+                    resetGame();
+                }
+            }, (error) => {
+                console.error("Firestore Listener Error:", error);
+                showMessage("Connection Error", "Lost connection to the room. Check your internet.");
+                resetGame();
+            });
+        }
+
+        /** Creates or attempts to join a room. */
+        async function connectRoom(roomId, isHost) {
+            if (!roomId || !userId) {
+                showMessage("Input Required", "Please enter a valid Room ID and ensure you are logged in.");
+                return;
+            }
+
+            const roomRef = doc(getRoomCollectionRef(), roomId);
+            const playerName = playerNameInput.value.trim() || 'Anonymous';
+            const password = roomPasswordInput.value.trim();
+            const passwordHash = password ? await sha256(password) : null;
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const roomSnap = await transaction.get(roomRef);
+
+                    if (isHost) {
+                        if (roomSnap.exists()) {
+                            throw new Error("Room already exists. Try joining or choose a new ID.");
+                        }
+
+                        // Initialize the new room and store the password hash
+                        const initialRoomData = {
+                            track: '3d-ring-track',
+                            status: 'waiting',
+                            passwordHash: passwordHash, // Store the hash!
+                            players: {},
+                            createdAt: serverTimestamp(),
+                        };
+                        transaction.set(roomRef, initialRoomData);
+                        console.log(`Room ${roomId} created.`);
+
+                    } else { // Joining
+                        if (!roomSnap.exists()) {
+                            throw new Error("Room not found. Check the ID or try creating it.");
+                        }
+
+                        const roomData = roomSnap.data();
+
+                        // 1. Password Check
+                        if (roomData.passwordHash && roomData.passwordHash !== passwordHash) {
+                            throw new Error("Incorrect room password.");
+                        }
+                        
+                        // 2. Check if race has started (optional)
+                        if (roomData.status !== 'waiting') {
+                            // throw new Error("Race has already started.");
+                        }
+                    }
+
+                    // Initialize or update player's state in the room
+                    // Initial position is in the middle of the road, on the South side (Y=580 in 2D coord space)
+                    localPlayerState = {
+                        // 2D Coordinates (used for movement/collision)
+                        x: GAME_CONFIG.CANVAS_SIZE / 2,
+                        y: GAME_CONFIG.CANVAS_SIZE / 2 + ROAD_CENTER_RADIUS,
+                        angle: -Math.PI / 2, // Facing up (-90 degrees)
+                        speed: 0,
+                        name: playerName,
+                        colorIndex: (Object.keys(roomSnap.data()?.players || {}).length) % colorPalette.length,
+                        lastUpdate: Date.now(),
+                    };
+
+                    const playerPath = `players.${userId}`;
+                    transaction.update(roomRef, {
+                        [playerPath]: localPlayerState
+                    });
+
+                });
+
+                // Transition to game UI and start listener
+                setupRoomListener(roomId);
+                lobbyUi.classList.add('hidden');
+                gameUi.classList.remove('hidden');
+                
+                // Initialize 3D scene
+                initThreeJs();
+                
+                startGameLoop();
+
+            } catch (error) {
+                console.error("Room connection failed:", error);
+                showMessage("Connection Failed", error.message);
+            }
+        }
+
+        // --- THREE.js SETUP AND 3D LOGIC ---
+
+        function initThreeJs() {
+            scene = new THREE.Scene();
+            // Use the HTML canvas element
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(GAME_CONFIG.CANVAS_SIZE, GAME_CONFIG.CANVAS_SIZE);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; 
+            renderer.setClearColor(0x0d1117, 1); // Set clear color to match background
+
+            // Camera setup
+            camera = new THREE.PerspectiveCamera(75, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
+            
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5); // Softer ambient light
+            scene.add(ambientLight);
+            
+            // Directional Light for shadows and highlights
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 3);
+            directionalLight.position.set(200, 300, 200);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 2048;
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.far = 800;
+            scene.add(directionalLight);
+
+            createTrackMesh();
+        }
+
+        function createTrackMesh() {
+            // Road center radius
+            const tubeRadius = (GAME_CONFIG.TRACK_OUTER_RADIUS - GAME_CONFIG.TRACK_INNER_RADIUS) / 2;
+
+            // 1. Road (Torus/Ring)
+            const roadGeometry = new THREE.TorusGeometry(
+                ROAD_CENTER_RADIUS, // Center radius
+                tubeRadius,         // Tube radius (half road width)
+                2,                  // Radial segments (low for flat road)
+                100                 // Tubular segments (high for smoothness)
+            );
+            roadGeometry.rotateX(Math.PI / 2); // Rotate to be flat on the XZ plane
+
+            const roadMaterial = new THREE.MeshLambertMaterial({ color: GAME_CONFIG.TRACK_ROAD_COLOR });
+            trackMesh = new THREE.Mesh(roadGeometry, roadMaterial);
+            trackMesh.receiveShadow = true;
+            trackMesh.position.set(0, -1, 0); // Slightly lowered 
+            scene.add(trackMesh);
+
+            // 2. Inner Curb/Barrier (Red)
+            const innerCurbRadius = GAME_CONFIG.TRACK_INNER_RADIUS + GAME_CONFIG.CURB_WIDTH / 2;
+            const innerCurbGeometry = new THREE.TorusGeometry(
+                innerCurbRadius, 
+                GAME_CONFIG.CURB_WIDTH / 2, 
+                10, 
+                100,
+                Math.PI * 2
+            );
+            innerCurbGeometry.rotateX(Math.PI / 2); 
+            const innerCurbMaterial = new THREE.MeshLambertMaterial({ color: GAME_CONFIG.CURB_COLOR_INNER });
+            const innerCurb = new THREE.Mesh(innerCurbGeometry, innerCurbMaterial);
+            innerCurb.receiveShadow = true;
+            innerCurb.position.y = GAME_CONFIG.CURB_WIDTH / 2; // Half height above ground
+            scene.add(innerCurb);
+
+            // 3. Outer Curb/Barrier (White)
+            const outerCurbRadius = GAME_CONFIG.TRACK_OUTER_RADIUS - GAME_CONFIG.CURB_WIDTH / 2;
+            const outerCurbGeometry = new THREE.TorusGeometry(
+                outerCurbRadius, 
+                GAME_CONFIG.CURB_WIDTH / 2, 
+                10, 
+                100,
+                Math.PI * 2
+            );
+            outerCurbGeometry.rotateX(Math.PI / 2); 
+            const outerCurbMaterial = new THREE.MeshLambertMaterial({ color: GAME_CONFIG.CURB_COLOR_OUTER });
+            const outerCurb = new THREE.Mesh(outerCurbGeometry, outerCurbMaterial);
+            outerCurb.receiveShadow = true;
+            outerCurb.position.y = GAME_CONFIG.CURB_WIDTH / 2;
+            scene.add(outerCurb);
+
+            // 4. Grass/Outer Ground Plane (Enhanced)
+            const groundGeometry = new THREE.PlaneGeometry(1000, 1000);
+            const groundMaterial = new THREE.MeshLambertMaterial({ color: GAME_CONFIG.TRACK_GRASS_COLOR });
+            const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
+            groundMesh.receiveShadow = true;
+            groundMesh.rotation.x = -Math.PI / 2;
+            groundMesh.position.y = -GAME_CONFIG.CURB_WIDTH / 2 - 1; // Position it below the curbs
+            scene.add(groundMesh);
+            
+            // 5. Start/Finish Line (Simple colored plane across the road)
+            const startLineGeometry = new THREE.PlaneGeometry(
+                GAME_CONFIG.TRACK_OUTER_RADIUS - GAME_CONFIG.TRACK_INNER_RADIUS, // Road width
+                5 // Thin line depth
+            );
+            const startLineMaterial = new THREE.MeshBasicMaterial({ color: 0xffa500 }); // Orange for visibility
+            const startLine = new THREE.Mesh(startLineGeometry, startLineMaterial);
+            startLine.rotation.x = -Math.PI / 2;
+            // Position it at the bottom center of the track (where cars start)
+            startLine.position.y = 0; 
+            startLine.position.z = ROAD_CENTER_RADIUS;
+            startLine.rotation.y = -Math.PI / 2; // Align to be perpendicular to the road flow
+            scene.add(startLine);
+        }
+
+        function createCarMesh(player) {
+            const colorIndex = player.colorIndex;
+            const carColor = (typeof colorIndex === 'number' && colorIndex >= 0 && colorIndex < colorPalette.length)
+                ? colorPalette[colorIndex]
+                : 0xcccccc; // Safe numeric fallback
+
+            // Use a Group to combine all parts (the actual car object)
+            const carGroup = new THREE.Group();
+            carGroup.rotation.order = 'YXZ'; 
+            
+            // 1. Main Chassis (Flatter, longer box)
+            const chassisGeometry = new THREE.BoxGeometry(GAME_CONFIG.CAR_WIDTH, GAME_CONFIG.CAR_HEIGHT, GAME_CONFIG.CAR_DEPTH);
+            const chassisMaterial = new THREE.MeshLambertMaterial({ color: carColor });
+            const chassis = new THREE.Mesh(chassisGeometry, chassisMaterial);
+            chassis.position.y = GAME_CONFIG.CAR_HEIGHT / 2;
+            chassis.castShadow = true;
+            chassis.receiveShadow = true;
+            carGroup.add(chassis);
+            
+            // 2. Cabin (Smaller, darker box shifted back slightly)
+            const cabinGeometry = new THREE.BoxGeometry(GAME_CONFIG.CAR_WIDTH * 0.8, GAME_CONFIG.CAR_HEIGHT * 0.8, GAME_CONFIG.CAR_DEPTH * 0.5);
+            const cabinMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 }); 
+            const cabin = new THREE.Mesh(cabinGeometry, cabinMaterial);
+            cabin.position.y = GAME_CONFIG.CAR_HEIGHT * 1.2;
+            cabin.position.z = -GAME_CONFIG.CAR_DEPTH * 0.1;
+            cabin.castShadow = true;
+            carGroup.add(cabin);
+            
+            // 3. Simple Spoiler (Small thin box at the back)
+            const spoilerGeometry = new THREE.BoxGeometry(GAME_CONFIG.CAR_WIDTH * 1.2, 1, 2);
+            const spoilerMaterial = new THREE.MeshLambertMaterial({ color: 0x000000 });
+            const spoiler = new THREE.Mesh(spoilerGeometry, spoilerMaterial);
+            spoiler.position.y = GAME_CONFIG.CAR_HEIGHT + 1;
+            spoiler.position.z = GAME_CONFIG.CAR_DEPTH * 0.5 - 1;
+            spoiler.castShadow = true;
+            carGroup.add(spoiler);
+
+            // 4. Wheels (4 simple cylinders)
+            const wheelGeometry = new THREE.CylinderGeometry(3, 3, 2, 10);
+            const wheelMaterial = new THREE.MeshLambertMaterial({ color: 0x111111 });
+            
+            const wheelPositions = [
+                { x: GAME_CONFIG.CAR_WIDTH / 2 + 1, z: GAME_CONFIG.CAR_DEPTH / 2 - 3 },
+                { x: -GAME_CONFIG.CAR_WIDTH / 2 - 1, z: GAME_CONFIG.CAR_DEPTH / 2 - 3 },
+                { x: GAME_CONFIG.CAR_WIDTH / 2 + 1, z: -GAME_CONFIG.CAR_DEPTH / 2 + 3 },
+                { x: -GAME_CONFIG.CAR_WIDTH / 2 - 1, z: -GAME_CONFIG.CAR_DEPTH / 2 + 3 },
+            ];
+            
+            wheelPositions.forEach(pos => {
+                const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial);
+                wheel.rotation.z = Math.PI / 2; // Lay flat
+                wheel.position.set(pos.x, GAME_CONFIG.CAR_HEIGHT / 4, pos.z);
+                wheel.castShadow = true;
+                carGroup.add(wheel);
+            });
+
+            scene.add(carGroup);
+            carMeshes[player.id] = carGroup; // Store the group
+        }
+
+        function updateCarMesh(player) {
+            let car = carMeshes[player.id];
+            
+            if (!car) {
+                // Attach the userId to the player object for creation
+                createCarMesh({ ...player, id: player.id });
+                car = carMeshes[player.id];
+            }
+
+            // Convert 2D game coordinates (0 to 700) to 3D scene coordinates (-350 to 350)
+            const centerX = GAME_CONFIG.CANVAS_SIZE / 2;
+            
+            // X (east/west) in 2D is X in 3D
+            car.position.x = player.x - centerX; 
+            // Y (north/south) in 2D is Z in 3D
+            car.position.z = player.y - centerX;
+            car.position.y = GAME_CONFIG.CAR_HEIGHT / 4; // Keep car on the ground, accounting for wheel height
+
+            // Angle from 2D map becomes rotation around Y axis
+            car.rotation.y = -player.angle - Math.PI / 2; 
+        }
+
+        function updateCamera(player) {
+            // Camera target is the car's current position in 3D scene coordinates
+            const targetX = player.x - GAME_CONFIG.CANVAS_SIZE / 2;
+            const targetZ = player.y - GAME_CONFIG.CANVAS_SIZE / 2;
+            const targetY = GAME_CONFIG.CAR_HEIGHT / 2;
+
+            // Desired camera position: slightly behind and above the car
+            const dist = 60; // Distance behind
+            const height = 40; // Height above
+
+            // Calculate position behind the car based on its angle
+            // Note: player.angle is the car's movement direction
+            const camX = targetX - Math.cos(player.angle) * dist;
+            const camZ = targetZ - Math.sin(player.angle) * dist;
+            const camY = targetY + height;
+
+            // Smooth camera movement using linear interpolation 
+            camera.position.x = THREE.MathUtils.lerp(camera.position.x, camX, 0.1);
+            camera.position.y = THREE.MathUtils.lerp(camera.position.y, camY, 0.1);
+            camera.position.z = THREE.MathUtils.lerp(camera.position.z, camZ, 0.1);
+
+            // Make camera look slightly ahead of the car
+            camera.lookAt(targetX + Math.cos(player.angle) * 5, targetY, targetZ + Math.sin(player.angle) * 5);
+        }
+
+        // --- GAME LOGIC AND LOOP ---
+
+        /** Updates the local player's position based on input. */
+        function updateLocalPlayer() {
+            if (!localPlayerState || gameData.status !== 'racing') return;
+
+            // 1. Acceleration/Braking
+            let acceleration = 0;
+            if (keys['ArrowUp'] || keys['w']) {
+                acceleration = GAME_CONFIG.ACCELERATION;
+            } else if (keys['ArrowDown'] || keys['s']) {
+                acceleration = -GAME_CONFIG.ACCELERATION * 0.5;
+            }
+
+            localPlayerState.speed += acceleration;
+            localPlayerState.speed *= GAME_CONFIG.FRICTION;
+
+            // Clamp speed
+            localPlayerState.speed = Math.min(Math.max(localPlayerState.speed, -GAME_CONFIG.MAX_SPEED * 0.5), GAME_CONFIG.MAX_SPEED);
+
+
+            // 2. Steering
+            let steer = 0;
+            // Only allow steering if moving faster than a minimum threshold
+            if (Math.abs(localPlayerState.speed) > 0.5) {
+                if (keys['ArrowLeft'] || keys['a']) {
+                    steer -= GAME_CONFIG.TURN_RATE * (localPlayerState.speed / GAME_CONFIG.MAX_SPEED);
+                }
+                if (keys['ArrowRight'] || keys['d']) {
+                    steer += GAME_CONFIG.TURN_RATE * (localPlayerState.speed / GAME_CONFIG.MAX_SPEED);
+                }
+            }
+
+            // Cap the steering angle
+            localPlayerState.angle += Math.min(Math.max(steer, -GAME_CONFIG.MAX_STEER), GAME_CONFIG.MAX_STEER);
+
+            // 3. Movement
+            const newX = localPlayerState.x + Math.cos(localPlayerState.angle) * localPlayerState.speed;
+            const newY = localPlayerState.y + Math.sin(localPlayerState.angle) * localPlayerState.speed;
+
+            // 4. Collision Check (Track Boundary)
+            if (checkCollision(newX, newY)) {
+                 // Collision: Stop and slightly bounce back
+                localPlayerState.speed *= -0.5; 
+                // Don't update position if colliding
+            } else {
+                localPlayerState.x = newX;
+                localPlayerState.y = newY;
+            }
+
+            // 5. Update Firestore (throttled)
+            const now = Date.now();
+            if (now - lastFirestoreUpdate > GAME_CONFIG.UPDATE_INTERVAL_MS && roomDocRef) {
+                lastFirestoreUpdate = now;
+                // Update only essential fields for performance
+                const updatePayload = {
+                    x: localPlayerState.x,
+                    y: localPlayerState.y,
+                    angle: localPlayerState.angle,
+                    speed: localPlayerState.speed,
+                    lastUpdate: now,
+                };
+                updateDoc(roomDocRef, { [`players.${userId}`]: updatePayload }).catch(e => {
+                    console.error("Firestore write error:", e);
+                });
+            }
+        }
+
+        /** Main game loop for local rendering. */
+        function gameLoop() {
+            updateLocalPlayer();
+
+            // Update 3D meshes for all players
+            const players = gameData.players || {};
+            // Track the keys to remove deleted cars
+            const activePlayerIds = new Set(Object.keys(players));
+            
+            Object.keys(carMeshes).forEach(pId => {
+                if (!activePlayerIds.has(pId)) {
+                    // Remove cars that are no longer in the data
+                    scene.remove(carMeshes[pId]);
+                    delete carMeshes[pId];
+                }
+            });
+
+
+            Object.keys(players).forEach(pId => {
+                const player = players[pId];
+                updateCarMesh({ ...player, id: pId });
+            });
+
+            // Update Camera if local player exists
+            if (localPlayerState) {
+                updateCamera(localPlayerState);
+            }
+
+            // Render the 3D scene
+            renderer.render(scene, camera);
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        /** Renders the player list in the side panel. */
+        function renderPlayerList() {
+            playerList.innerHTML = '';
+            const players = gameData.players || {};
+            Object.keys(players).forEach(pId => {
+                const player = players[pId];
+                const isLocal = pId === userId;
+                
+                // FIX: Ensure a valid numeric color value is used before calling toString(16).
+                const colorIndex = player.colorIndex;
+                const colorValue = (typeof colorIndex === 'number' && colorIndex >= 0 && colorIndex < colorPalette.length)
+                    ? colorPalette[colorIndex]
+                    : 0xaaaaaa; // Safe numeric fallback
+                
+                const colorCode = '#' + colorValue.toString(16).padStart(6, '0');
+                
+                const li = document.createElement('li');
+                li.className = `flex justify-between items-center p-2 rounded-md ${isLocal ? 'bg-indigo-900/50 border border-indigo-600' : 'bg-gray-700/50'}`;
+                li.innerHTML = `
+                    <div class="flex items-center space-x-2">
+                        <span class="inline-block w-3 h-3 rounded-full" style="background-color: ${colorCode};"></span>
+                        <span class="font-semibold">${player.name}</span>
+                    </div>
+                    ${isLocal ? '<span class="text-xs text-indigo-400"> (You)</span>' : ''}
+                `;
+                playerList.appendChild(li);
+            });
+        }
+
+        function startGameLoop() {
+            if (localPlayerState) {
+                gameLoop();
+            } else {
+                showMessage("Waiting for Setup", "Please wait for game state to initialize.");
+            }
+        }
+
+        function resetGame() {
+            roomDocRef = null;
+            gameData = { players: {} };
+            localPlayerState = null;
+            keys = {};
+            
+            // Clean up 3D elements
+            Object.values(carMeshes).forEach(mesh => scene.remove(mesh));
+            carMeshes = {};
+            
+            lobbyUi.classList.remove('hidden');
+            gameUi.classList.add('hidden');
+            currentRoomIdEl.textContent = '';
+        }
+
+        // --- EVENT LISTENERS ---
+
+        hostBtn.addEventListener('click', () => {
+            const roomId = roomIdInput.value.trim().toUpperCase();
+            connectRoom(roomId, true);
+        });
+
+        joinBtn.addEventListener('click', () => {
+            const roomId = roomIdInput.value.trim().toUpperCase();
+            connectRoom(roomId, false);
+        });
+
+        // Key press handlers
+        document.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+            
+            // 'Start Race' hook
+            if (e.key === ' ' && gameData.status === 'waiting' && roomDocRef) {
+                updateDoc(roomDocRef, { status: 'racing' }).catch(e => console.error("Could not start race:", e));
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+
+
+        // Initialize everything on load
+        window.onload = initializeFirebase;
+
+    </script>
 </body>
 </html>
+
