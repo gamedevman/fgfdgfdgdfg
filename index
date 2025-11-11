@@ -63,6 +63,85 @@
         .input-text {
             @apply bg-gray-700 border border-gray-600 text-white p-2 rounded-lg focus:ring-indigo-500 focus:border-indigo-500;
         }
+
+        /* --- MOBILE CONTROL STYLES --- */
+        #mobile-controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 150px; /* Allocate space below the canvas on mobile */
+            z-index: 5;
+            padding: 10px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none; /* Allow events to pass through background areas */
+        }
+
+        /* Base style for touch buttons */
+        .touch-btn {
+            position: absolute;
+            width: 70px;
+            height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+            color: white;
+            background-color: rgba(31, 111, 235, 0.7); /* Blue transparent */
+            border: 2px solid rgba(255, 255, 255, 0.5);
+            border-radius: 50%;
+            user-select: none;
+            cursor: pointer;
+            transition: background-color 0.1s;
+            pointer-events: auto; /* Re-enable events for buttons themselves */
+        }
+        .touch-btn:active {
+            background-color: rgba(31, 111, 235, 1.0); /* Solid blue on press */
+            transform: scale(0.95);
+        }
+
+        /* Left side (Steering) */
+        #left-pad {
+            position: relative;
+            width: 150px;
+            height: 150px;
+        }
+        #touch-left { top: 40px; left: 10px; }
+        #touch-right { top: 40px; right: 10px; }
+
+        /* Right side (Acceleration/Brake) */
+        #right-pad {
+            position: relative;
+            width: 150px;
+            height: 150px;
+        }
+        #touch-up { top: 10px; right: 40px; background-color: rgba(76, 175, 80, 0.7); /* Green */ }
+        #touch-down { bottom: 10px; right: 40px; background-color: rgba(244, 67, 54, 0.7); /* Red */ }
+        #touch-up:active { background-color: rgba(76, 175, 80, 1.0); }
+        #touch-down:active { background-color: rgba(244, 67, 54, 1.0); }
+        
+        /* On small screens, position controls inside the container to save space */
+        @media (max-width: 600px) {
+            #mobile-controls {
+                position: absolute;
+                bottom: 0;
+                left: 0;
+                right: 0;
+                height: 100%; /* Take full height for better touch access */
+                background: none;
+                z-index: 5; 
+            }
+            #left-pad { width: 40%; height: 100%; align-self: flex-end; }
+            #right-pad { width: 40%; height: 100%; align-self: flex-end; }
+            
+            #touch-left { top: auto; bottom: 10px; left: 10px; width: 60px; height: 60px; }
+            #touch-right { top: auto; bottom: 10px; right: 10px; width: 60px; height: 60px; }
+            
+            #touch-up { top: auto; bottom: 80px; right: 10px; width: 80px; height: 80px; }
+            #touch-down { top: auto; bottom: 5px; right: 100px; width: 60px; height: 60px; font-size: 18px; }
+        }
     </style>
 </head>
 <body>
@@ -106,6 +185,32 @@
 
         <div id="game-container">
             <canvas id="game-canvas"></canvas>
+            
+            <!-- MOBILE TOUCH CONTROLS (Hidden by default) -->
+            <div id="mobile-controls" class="hidden">
+                <!-- Steering Pad (Left) -->
+                <div id="left-pad">
+                    <button class="touch-btn" id="touch-left" data-key="ArrowLeft">
+                        &#x25c0;
+                    </button>
+                    <button class="touch-btn" id="touch-right" data-key="ArrowRight">
+                        &#x25b6;
+                    </button>
+                </div>
+                
+                <!-- Acceleration/Brake Pad (Right) -->
+                <div id="right-pad">
+                    <button class="touch-btn" id="touch-up" data-key="ArrowUp" style="font-size: 32px;">
+                        &#x25b2;
+                    </button>
+                    <!-- Brake/Start Race button -->
+                    <button class="touch-btn" id="touch-down" data-key="ArrowDown">
+                        BRAKE
+                    </button>
+                </div>
+            </div>
+            <!-- END MOBILE TOUCH CONTROLS -->
+            
             <div id="message-box" class="hidden">
                 <h3 id="message-title" class="text-2xl font-bold mb-2"></h3>
                 <p id="message-text" class="mb-4 text-gray-300"></p>
@@ -118,7 +223,9 @@
             <ul id="player-list" class="space-y-1 text-sm">
                 <!-- Player list will be inserted here -->
             </ul>
-            <p class="mt-4 text-xs text-gray-500">Use **Arrow Keys** or **WASD** to drive. Press **SPACE** to start the race.</p>
+            <p id="controls-help" class="mt-4 text-xs text-gray-500">
+                <!-- Content set by JS based on device -->
+            </p>
         </div>
     </div>
 
@@ -174,6 +281,7 @@
         let scene, camera, renderer;
         let carMeshes = {}; // Map of userId to THREE.Group (the car model)
         let trackMesh;
+        let isGameInitialized = false; // NEW FLAG for game start synchronization
 
         // DOM elements
         const canvas = document.getElementById('game-canvas');
@@ -187,6 +295,7 @@
         const playerList = document.getElementById('player-list');
         const gameStatusEl = document.getElementById('game-status');
         const currentRoomIdEl = document.getElementById('current-room-id');
+        const controlsHelpEl = document.getElementById('controls-help');
 
         // Message Box elements
         const messageBox = document.getElementById('message-box');
@@ -195,6 +304,11 @@
         const messageCloseBtn = document.getElementById('message-close-btn');
 
         // --- UTILITY FUNCTIONS ---
+
+        /** Detects if the user is likely on a mobile device. */
+        function isMobile() {
+            return /Mobi|Android/i.test(navigator.userAgent);
+        }
 
         /** Shows a custom modal message. */
         function showMessage(title, text) {
@@ -289,16 +403,25 @@
                         gameData.players = {};
                     }
 
-                    // Update UI elements
-                    document.getElementById('player-count').textContent = Object.keys(gameData.players).length;
-                    gameStatusEl.textContent = gameData.status.toUpperCase();
-                    gameStatusEl.className = `font-bold ${gameData.status === 'racing' ? 'text-green-400' : 'text-yellow-400'}`;
-
-                    // Update local player state from the database
+                    // Check if the current user is still listed in the players object
                     if (gameData.players[userId]) {
                         // Blend the local state with the network state
                         localPlayerState = { ...localPlayerState, ...gameData.players[userId] };
                     }
+
+                    // --- CRITICAL FIX: Start 3D rendering AFTER receiving initial data ---
+                    if (!isGameInitialized && localPlayerState) {
+                        initThreeJs();
+                        gameLoop();
+                        isGameInitialized = true;
+                        console.log("3D Scene and Game Loop initialized after receiving first snapshot.");
+                    }
+                    // --- END CRITICAL FIX ---
+
+                    // Update UI elements
+                    document.getElementById('player-count').textContent = Object.keys(gameData.players).length;
+                    gameStatusEl.textContent = gameData.status.toUpperCase();
+                    gameStatusEl.className = `font-bold ${gameData.status === 'racing' ? 'text-green-400' : 'text-yellow-400'}`;
 
                     renderPlayerList();
                 } else {
@@ -308,7 +431,12 @@
                 }
             }, (error) => {
                 console.error("Firestore Listener Error:", error);
-                showMessage("Connection Error", "Lost connection to the room. Check your internet.");
+                // Check for common permission errors
+                if (error.code === 'permission-denied') {
+                    showMessage("Access Denied", "Could not read the room. Ensure the room ID is correct and the password was entered correctly.");
+                } else {
+                    showMessage("Connection Error", "Lost connection to the room. Check your internet.");
+                }
                 resetGame();
             });
         }
@@ -321,13 +449,26 @@
             }
 
             const roomRef = doc(getRoomCollectionRef(), roomId);
-            const playerName = playerNameInput.value.trim() || 'Anonymous';
+            const playerName = playerNameInput.value.trim() || 'Anonymous Racer';
             const password = roomPasswordInput.value.trim();
             const passwordHash = password ? await sha256(password) : null;
 
             try {
+                // Initialize local state with all properties needed for gameLoop, even before transaction commits
+                const initialPlayerIdx = 0; // Temporary value, updated in transaction
+                localPlayerState = {
+                    x: GAME_CONFIG.CANVAS_SIZE / 2,
+                    y: GAME_CONFIG.CANVAS_SIZE / 2 + ROAD_CENTER_RADIUS,
+                    angle: -Math.PI / 2, // Facing up (-90 degrees)
+                    speed: 0,
+                    name: playerName,
+                    colorIndex: initialPlayerIdx, // Will be updated in transaction
+                    lastUpdate: Date.now(),
+                };
+
                 await runTransaction(db, async (transaction) => {
                     const roomSnap = await transaction.get(roomRef);
+                    let playerCount = 0;
 
                     if (isHost) {
                         if (roomSnap.exists()) {
@@ -335,6 +476,7 @@
                         }
 
                         // Initialize the new room and store the password hash
+                        playerCount = 1;
                         const initialRoomData = {
                             track: '3d-ring-track',
                             status: 'waiting',
@@ -357,44 +499,39 @@
                             throw new Error("Incorrect room password.");
                         }
                         
-                        // 2. Check if race has started (optional)
+                        // 2. Determine next player index
+                        playerCount = Object.keys(roomData.players || {}).length + 1;
                         if (roomData.status !== 'waiting') {
-                            // throw new Error("Race has already started.");
+                            // Optionally allow joining mid-race, but log warning
+                            console.warn("Joining mid-race.");
                         }
                     }
 
-                    // Initialize or update player's state in the room
-                    // Initial position is in the middle of the road, on the South side (Y=580 in 2D coord space)
-                    localPlayerState = {
-                        // 2D Coordinates (used for movement/collision)
-                        x: GAME_CONFIG.CANVAS_SIZE / 2,
-                        y: GAME_CONFIG.CANVAS_SIZE / 2 + ROAD_CENTER_RADIUS,
-                        angle: -Math.PI / 2, // Facing up (-90 degrees)
-                        speed: 0,
-                        name: playerName,
-                        colorIndex: (Object.keys(roomSnap.data()?.players || {}).length) % colorPalette.length,
-                        lastUpdate: Date.now(),
-                    };
-
+                    // Set the correct color index based on the count *before* the current player is added
+                    const colorIdx = (playerCount - 1) % colorPalette.length;
+                    localPlayerState.colorIndex = colorIdx; // Update local state
+                    
                     const playerPath = `players.${userId}`;
+                    
+                    // Final payload with correct colorIndex
+                    const finalPlayerPayload = {
+                        ...localPlayerState,
+                        colorIndex: colorIdx,
+                    };
+                    
                     transaction.update(roomRef, {
-                        [playerPath]: localPlayerState
+                        [playerPath]: finalPlayerPayload // Use final payload for DB
                     });
 
                 });
 
-                // Transition to game UI and start listener
+                // Transition to game UI and start listener (listener will handle 3D init and loop start)
                 setupRoomListener(roomId);
                 lobbyUi.classList.add('hidden');
                 gameUi.classList.remove('hidden');
-                
-                // Initialize 3D scene
-                initThreeJs();
-                
-                startGameLoop();
 
             } catch (error) {
-                console.error("Room connection failed:", error);
+                console.error("Room connection failed (Transaction error):", error);
                 showMessage("Connection Failed", error.message);
             }
         }
@@ -572,6 +709,12 @@
                 createCarMesh({ ...player, id: player.id });
                 car = carMeshes[player.id];
             }
+            
+            // Safely check for critical properties before updating position
+            if (typeof player.x === 'undefined' || typeof player.y === 'undefined' || typeof player.angle === 'undefined') {
+                console.warn(`Skipping render for player ${player.name}: Incomplete position data.`);
+                return;
+            }
 
             // Convert 2D game coordinates (0 to 700) to 3D scene coordinates (-350 to 350)
             const centerX = GAME_CONFIG.CANVAS_SIZE / 2;
@@ -612,6 +755,43 @@
         }
 
         // --- GAME LOGIC AND LOOP ---
+
+        /** The actual game loop function. */
+        function gameLoop() {
+            if (!isGameInitialized) return;
+
+            updateLocalPlayer();
+
+            // Update 3D meshes for all players
+            const players = gameData.players || {};
+            // Track the keys to remove deleted cars
+            const activePlayerIds = new Set(Object.keys(players));
+            
+            Object.keys(carMeshes).forEach(pId => {
+                if (!activePlayerIds.has(pId)) {
+                    // Remove cars that are no longer in the data
+                    scene.remove(carMeshes[pId]);
+                    delete carMeshes[pId];
+                }
+            });
+
+
+            Object.keys(players).forEach(pId => {
+                const player = players[pId];
+                updateCarMesh({ ...player, id: pId });
+            });
+
+            // Update Camera if local player exists
+            if (localPlayerState) {
+                updateCamera(localPlayerState);
+            }
+
+            // Render the 3D scene
+            renderer.render(scene, camera);
+
+            requestAnimationFrame(gameLoop);
+        }
+
 
         /** Updates the local player's position based on input. */
         function updateLocalPlayer() {
@@ -673,44 +853,18 @@
                     speed: localPlayerState.speed,
                     lastUpdate: now,
                 };
-                updateDoc(roomDocRef, { [`players.${userId}`]: updatePayload }).catch(e => {
-                    console.error("Firestore write error:", e);
-                });
-            }
-        }
-
-        /** Main game loop for local rendering. */
-        function gameLoop() {
-            updateLocalPlayer();
-
-            // Update 3D meshes for all players
-            const players = gameData.players || {};
-            // Track the keys to remove deleted cars
-            const activePlayerIds = new Set(Object.keys(players));
-            
-            Object.keys(carMeshes).forEach(pId => {
-                if (!activePlayerIds.has(pId)) {
-                    // Remove cars that are no longer in the data
-                    scene.remove(carMeshes[pId]);
-                    delete carMeshes[pId];
+                
+                // Add check to ensure we have a doc reference before trying to write
+                if(roomDocRef) {
+                    updateDoc(roomDocRef, { [`players.${userId}`]: updatePayload }).catch(e => {
+                        console.error("Firestore write error (Player movement update failed):", e);
+                        // Show message if it's a permission issue or a critical failure
+                        if (e.code === 'permission-denied') {
+                             showMessage("Write Failed", "You lost permission to update the room data. The race might stop syncing.");
+                        }
+                    });
                 }
-            });
-
-
-            Object.keys(players).forEach(pId => {
-                const player = players[pId];
-                updateCarMesh({ ...player, id: pId });
-            });
-
-            // Update Camera if local player exists
-            if (localPlayerState) {
-                updateCamera(localPlayerState);
             }
-
-            // Render the 3D scene
-            renderer.render(scene, camera);
-
-            requestAnimationFrame(gameLoop);
         }
 
         /** Renders the player list in the side panel. */
@@ -721,7 +875,7 @@
                 const player = players[pId];
                 const isLocal = pId === userId;
                 
-                // FIX: Ensure a valid numeric color value is used before calling toString(16).
+                // Ensure a valid numeric color value is used before calling toString(16).
                 const colorIndex = player.colorIndex;
                 const colorValue = (typeof colorIndex === 'number' && colorIndex >= 0 && colorIndex < colorPalette.length)
                     ? colorPalette[colorIndex]
@@ -742,19 +896,12 @@
             });
         }
 
-        function startGameLoop() {
-            if (localPlayerState) {
-                gameLoop();
-            } else {
-                showMessage("Waiting for Setup", "Please wait for game state to initialize.");
-            }
-        }
-
         function resetGame() {
             roomDocRef = null;
             gameData = { players: {} };
             localPlayerState = null;
             keys = {};
+            isGameInitialized = false; // Reset the flag
             
             // Clean up 3D elements
             Object.values(carMeshes).forEach(mesh => scene.remove(mesh));
@@ -763,6 +910,25 @@
             lobbyUi.classList.remove('hidden');
             gameUi.classList.add('hidden');
             currentRoomIdEl.textContent = '';
+        }
+
+        // --- MOBILE/TOUCH HANDLERS ---
+        
+        function handleTouchStart(e) {
+            e.preventDefault(); // Prevent scrolling/zoom
+            const key = e.currentTarget.dataset.key;
+            keys[key] = true;
+            
+            // Start Race hook
+            if (key === 'ArrowUp' && gameData.status === 'waiting' && roomDocRef) {
+                updateDoc(roomDocRef, { status: 'racing' }).catch(err => console.error("Could not start race:", err));
+            }
+        }
+
+        function handleTouchEnd(e) {
+            e.preventDefault();
+            const key = e.currentTarget.dataset.key;
+            keys[key] = false;
         }
 
         // --- EVENT LISTENERS ---
@@ -777,11 +943,14 @@
             connectRoom(roomId, false);
         });
 
-        // Key press handlers
+        // Keyboard press handlers
         document.addEventListener('keydown', (e) => {
-            keys[e.key] = true;
+            // Only allow keyboard controls if not on mobile, or for special keys like space
+            if (!isMobile() || e.key === ' ') {
+                keys[e.key] = true;
+            }
             
-            // 'Start Race' hook
+            // 'Start Race' hook for keyboard users
             if (e.key === ' ' && gameData.status === 'waiting' && roomDocRef) {
                 updateDoc(roomDocRef, { status: 'racing' }).catch(e => console.error("Could not start race:", e));
             }
@@ -790,11 +959,31 @@
             keys[e.key] = false;
         });
 
+        // Initialize setup based on device type
+        function setupControls() {
+            if (isMobile()) {
+                document.getElementById('mobile-controls').classList.remove('hidden');
+                
+                // Attach touch listeners to the touch buttons
+                document.querySelectorAll('.touch-btn').forEach(btn => {
+                    btn.addEventListener('touchstart', handleTouchStart, { passive: false });
+                    btn.addEventListener('touchend', handleTouchEnd, { passive: false });
+                });
+                
+                controlsHelpEl.innerHTML = 'Use the **Touch Buttons** to drive. Tap the **ACCELERATE** button (&#x25b2;) to start the race.';
+            } else {
+                controlsHelpEl.innerHTML = 'Use **Arrow Keys** or **WASD** to drive. Press **SPACE** to start the race.';
+            }
+        }
 
         // Initialize everything on load
-        window.onload = initializeFirebase;
+        window.onload = () => {
+            initializeFirebase();
+            setupControls();
+        };
 
     </script>
 </body>
 </html>
+
 
